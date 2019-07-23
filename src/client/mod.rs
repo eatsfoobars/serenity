@@ -343,13 +343,6 @@ impl Client {
     pub fn new<H>(token: impl AsRef<str>, handler: H) -> Result<Self>
         where H: EventHandler + Send + Sync + 'static {
 
-        Self::new_with_handlers(token.as_ref(), Some(handler), None::<DummyRawEventHandler>)
-    }
-    /// Creates a client with an optional Handler. If you pass `None`, events are never parsed, but
-    /// they can be received by registering a RawHandler.
-    pub fn new_with_handlers<H, RH>(token: impl AsRef<str>, handler: Option<H>, raw_handler: Option<RH>) -> Result<Self>
-        where H: EventHandler + Send + Sync + 'static,
-              RH: RawEventHandler + Send + Sync + 'static {
         let token = token.as_ref().trim();
 
         let token = if token.starts_with("Bot ") {
@@ -358,7 +351,21 @@ impl Client {
             format!("Bot {}", token)
         };
 
-        let http = Http::new_with_token(&token);
+        Self::new_with_handlers(&token, Some(handler), None::<DummyRawEventHandler>)
+    }
+
+    pub fn new_with_token<H>(token: impl AsRef<str>, handler: H) -> Result<Self>
+        where H: EventHandler + Send + Sync + 'static {
+
+        Self::new_with_handlers(token.as_ref().trim(), Some(handler), None::<DummyRawEventHandler>)
+    }
+
+    /// Creates a client with an optional Handler. If you pass `None`, events are never parsed, but
+    /// they can be received by registering a RawHandler.
+    pub fn new_with_handlers<H, RH>(token: impl AsRef<str>, handler: Option<H>, raw_handler: Option<RH>) -> Result<Self>
+        where H: EventHandler + Send + Sync + 'static,
+              RH: RawEventHandler + Send + Sync + 'static {
+        let http = Http::new_with_token(token.as_ref());
 
         let name = "serenity client".to_owned();
         let threadpool = ThreadPool::with_name(name, 5);
