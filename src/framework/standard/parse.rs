@@ -1,6 +1,7 @@
 use super::*;
 use crate::client::Context;
 use crate::model::channel::Message;
+use aho_corasick::{AhoCorasickBuilder, MatchKind};
 use uwl::{StrExt, UnicodeStream};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -16,7 +17,7 @@ pub fn parse_prefix<'a>(
     ctx: &mut Context,
     msg: &'a Message,
     config: &Configuration,
-) -> (Prefix<'a>, &'a str) {
+) -> Vec<(Prefix<'a>, &'a str)> {
     let mut stream = UnicodeStream::new(&msg.content);
     stream.take_while(|s| s.is_whitespace());
 
@@ -24,57 +25,74 @@ pub fn parse_prefix<'a>(
         if let Ok(id) = stream.parse("<@(!){}>") {
             if id.is_numeric() && mention == id {
                 stream.take_while(|s| s.is_whitespace());
-                return (Prefix::Mention(id), stream.rest());
+                return vec![(Prefix::Mention(id), stream.rest())];
             }
         }
     }
 
-    let mut prefix = None;
-    if !config.prefixes.is_empty() || !config.dynamic_prefixes.is_empty() {
-        for f in &config.dynamic_prefixes {
-            if let Some(p) = f(ctx, msg) {
-                let pp = stream.peek_for(p.chars().count());
+    let text = stream.rest();
 
-                if p == pp {
-                    prefix = Some(pp);
-                    break;
-                }
-            }
-        }
+    let mut prefixes: Vec<String> = config
+        .dynamic_prefixes
+        .iter()
+        .filter_map(|f| f(ctx, msg))
+        .collect();
+    prefixes.extend(config.prefixes.clone());
 
-        for p in &config.prefixes {
-            // If `dynamic_prefixes` succeeded, don't iterate through the normal prefixes.
-            if prefix.is_some() {
-                break;
-            }
+    let ac = AhoCorasickBuilder::new()
+        .auto_configure(&prefixes)
+        .match_kind(MatchKind::LeftmostFirst)
+        .build(&prefixes);
+    let mut iter = ac.find_iter(text);
 
-            let pp = stream.peek_for(p.chars().count());
+    let mut actual = vec![];
 
-            if p == pp {
-                prefix = Some(pp);
-                break;
-            }
-        }
-    }
+    stream = UnicodeStream::new(text);
 
-    if let Some(prefix) = prefix {
-        stream.increment(prefix.len());
+    while let Some(mat) = iter.next() {
+        let prefix = &text[mat.start()..mat.end()];
+
+        // Got'em!
+        // We don't care about the start of the actual match
+        // The end of the match will be the start of the text
+        let start = mat.end();
+
+        // Gotta advance the stream
+        stream.set(mat.end());
 
         if config.with_whitespace.prefixes {
             stream.take_while(|s| s.is_whitespace());
         }
 
-        let args = stream.rest();
+        // Keep looking for an end (non-exclusive)
+        let mut end = None;
 
-        return (Prefix::Punct(prefix), args.trim());
+        while let Some(mat) = iter.next() {
+            // Gotta advance the stream
+            stream.set(mat.end());
+
+            if config.with_whitespace.prefixes {
+                stream.take_while(|s| s.is_whitespace());
+            }
+
+            if stream.eat("end") {
+                // That's all, folks
+                end = Some(mat.start());
+                break;
+            }
+        }
+
+        actual.push((Prefix::Punct(prefix), match end {
+            Some(end) => &text[start..end],
+            None => &text[start..]
+        }));
     }
 
-    if config.with_whitespace.prefixes {
-        stream.take_while(|s| s.is_whitespace());
+    if actual.is_empty() {
+        actual.push((Prefix::None, &msg.content))
     }
 
-    let args = stream.rest();
-    (Prefix::None, args.trim())
+    actual
 }
 
 struct CommandParser<'msg, 'groups, 'config, 'ctx> {
