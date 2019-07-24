@@ -83,8 +83,8 @@ pub fn parse_prefix<'a>(
         }
 
         actual.push((Prefix::Punct(prefix), match end {
-            Some(end) => &text[start..end],
-            None => &text[start..]
+            Some(end) => text[start..end].trim_end(),
+            None => text[start..].trim_end()
         }));
     }
 
