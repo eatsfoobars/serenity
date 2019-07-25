@@ -24,6 +24,7 @@ use crate::model::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::mpsc::channel;
 use threadpool::ThreadPool;
 
 #[cfg(feature = "cache")]
@@ -596,13 +597,32 @@ impl StandardFramework {
     }
 }
 
+#[derive(Debug)]
+enum ChannelCommands {
+    Number(usize),
+    Done,
+}
+
 impl Framework for StandardFramework {
     fn dispatch(&mut self, mut ctx: Context, msg: Message, threadpool: &ThreadPool) {
+        let (tx, rx) = channel();
+        tx.send(ChannelCommands::Done).unwrap();
+
         for (prefix, rest) in parse_prefix(&mut ctx, &msg, &self.config) {
+            let tx = tx.clone();
+
+            let num_threads = match rx.recv().unwrap() {
+                ChannelCommands::Number(x) => x,
+                ChannelCommands::Done => 0,
+            };
+
+            for _ in 0..num_threads {
+                rx.recv().unwrap();
+            }
+
             let mut ctx = ctx.clone();
             let msg = msg.clone();
 
-            threadpool.join();
             if prefix != Prefix::None && rest.trim().is_empty() {
 
                 if let Some(prefix_only) = &self.prefix_only {
@@ -611,7 +631,10 @@ impl Framework for StandardFramework {
 
                     threadpool.execute(move || {
                         prefix_only(&mut ctx, &msg);
+                        let _ = tx.send(ChannelCommands::Done);
                     });
+                } else {
+                    let _ = tx.send(ChannelCommands::Done);
                 }
 
                 return;
@@ -625,7 +648,10 @@ impl Framework for StandardFramework {
 
                     threadpool.execute(move || {
                         normal(&mut ctx, &msg);
+                        let _ = tx.send(ChannelCommands::Done);
                     });
+                } else {
+                    let _ = tx.send(ChannelCommands::Done);
                 }
 
                 return;
@@ -636,7 +662,7 @@ impl Framework for StandardFramework {
                 if let Some(dispatch) = &self.dispatch {
                     dispatch(&mut ctx, &msg, error);
                 }
-
+                let _ = tx.send(ChannelCommands::Done);
                 return;
             }
 
@@ -651,13 +677,26 @@ impl Framework for StandardFramework {
             ) {
                 Ok(i) => i,
                 Err(Ok(Some(unreg))) => {
+                    let mut threads = 0;
+                    if self.unrecognised_command.is_some() {
+                        threads += 1;
+                    }
+                    if self.normal_message.is_some() {
+                        threads += 1;
+                    }
+
+                    let _ = tx.send(ChannelCommands::Number(threads));
+
                     if let Some(unrecognised_command) = &self.unrecognised_command {
                         let unrecognised_command = Arc::clone(&unrecognised_command);
                         let mut ctx = ctx.clone();
                         let msg = msg.clone();
                         let unreg = unreg.to_string();
+                        let tx = tx.clone();
+
                         threadpool.execute(move || {
                             unrecognised_command(&mut ctx, &msg, &unreg);
+                            let _ = tx.send(ChannelCommands::Done);
                         });
                     }
 
@@ -667,6 +706,7 @@ impl Framework for StandardFramework {
 
                         threadpool.execute(move || {
                             normal(&mut ctx, &msg);
+                            let _ = tx.send(ChannelCommands::Done);
                         });
                     }
 
@@ -678,6 +718,7 @@ impl Framework for StandardFramework {
                         let msg = msg.clone();
                         threadpool.execute(move || {
                             normal(&mut ctx, &msg);
+                            let _ = tx.send(ChannelCommands::Done);
                         });
                     }
 
@@ -688,6 +729,7 @@ impl Framework for StandardFramework {
                         dispatch(&mut ctx, &msg, error);
                     }
 
+                    let _ = tx.send(ChannelCommands::Done);
                     return;
                 }
             };
@@ -713,6 +755,7 @@ impl Framework for StandardFramework {
                     threadpool.execute(move || {
                         if let Some(before) = before {
                             if !before(&mut ctx, &msg, name) {
+                                let _ = tx.send(ChannelCommands::Done);
                                 return;
                             }
                         }
@@ -722,6 +765,7 @@ impl Framework for StandardFramework {
                         if let Some(after) = after {
                             after(&mut ctx, &msg, name, res);
                         }
+                        let _ = tx.send(ChannelCommands::Done);
                     });
                 }
                 Invoke::Command {
@@ -740,6 +784,8 @@ impl Framework for StandardFramework {
                             dispatch(&mut ctx, &msg, error);
                         }
 
+                        let _ = tx.send(ChannelCommands::Done);
+
                         return;
                     }
 
@@ -750,6 +796,7 @@ impl Framework for StandardFramework {
                     threadpool.execute(move || {
                         if let Some(before) = before {
                             if !before(&mut ctx, &msg, name) {
+                                let _ = tx.send(ChannelCommands::Done);
                                 return;
                             }
                         }
@@ -759,6 +806,8 @@ impl Framework for StandardFramework {
                         if let Some(after) = after {
                             after(&mut ctx, &msg, name, res);
                         }
+
+                        let _ = tx.send(ChannelCommands::Done);
                     });
                 }
             }
